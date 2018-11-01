@@ -4,7 +4,13 @@ from werkzeug.security import check_password_hash, generate_password_hash
 from hashlib import md5
 from app import login
 from flask_login import UserMixin
+from time import time
 
+followers = db.Table(
+    'followers',
+    db.Column('follower_id', db.Integer, db.ForeignKey('user.id')),
+    db.Column('followed_id', db.Integer, db.ForeignKey('user.id'))
+)
 
 class User(UserMixin, db.Model):
   id = db.Column(db.Integer, primary_key=True)
@@ -12,6 +18,14 @@ class User(UserMixin, db.Model):
   password_hash = db.Column(db.String(128))
   email = db.Column(db.String(128), index=True, unique=True)
   posts = db.relationship('Post', backref='author', lazy='dynamic')
+  
+  about_me = db.Column(db.String(140))
+  last_seen = db.Column(db.DateTime, default=datetime.utcnow)
+  followed = db.relationship(
+        'User', secondary=followers,
+        primaryjoin=(followers.c.follower_id == id),
+        secondaryjoin=(followers.c.followed_id == id),
+        backref=db.backref('followers', lazy='dynamic'), lazy='dynamic')
 
   def set_password(self, password):
     self.password_hash = generate_password_hash(password)
@@ -23,6 +37,36 @@ class User(UserMixin, db.Model):
     digest = md5(self.email.lower().encode('utf-8')).hexdigest()
     return 'https://www.gravatar.com/avatar/{}?d=identicon&s={}'.format(digest,size)
 
+  def follow(self, user):
+    if not self.is_following(user):
+      self.followed.append(user)
+
+  def unfollow(self, user):
+    if self.is_following(user):
+      self.followed.remove(user)
+
+  def is_following(self, user):
+        return self.followed.filter(
+            followers.c.followed_id == user.id).count() > 0
+
+  def followed_posts(self):
+    followd_posts = Post.query.join(followers, (followers.c.followed_id == Post.user_id )).filter(followers.c.follower_id == self.id )
+    own = Post.query.filter_by(user_id=self.id)
+    return followd_posts.union(own).order_by(Post.timestamp.desc())
+
+  def get_reset_password_token(self, expires_in=600):
+    return jwt.encode( {'reset_password': self.id, 'exp': time() + expires_in},
+                        app.config['SECRET_KEY'], algorithms='HS256'.decode('utf-8'))
+
+  @staticmethod
+  def verify_reset_password_token(token):
+    try:
+      id = jwt.decode(token, app.config['SECRET_KEY'],algorithms=['HS256'])['reset_password']
+
+    except Exception as e:
+      return
+    return User.query.get(id)
+    
   def __repr__(self):
     return '<User {}'.format(self.username)
 
